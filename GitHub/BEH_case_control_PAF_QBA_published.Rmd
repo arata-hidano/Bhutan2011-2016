@@ -1,0 +1,165 @@
+---
+title: "BEH_case_control_PAF_QBA2016"
+author: "Arata Hidano"
+date: "19 August 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+__*Dataset:*__ "BEH_cc_final_analysis.csv"  
+
+__*Description:*__ A matched case-control study was conducted to identify modifiable risk factors associated with BEH in Bhutan. The unit of interest was household. Cattle husbandry factors asked included housing practice, free grazing, and tether grazing in a given month of the year. The use of fresh and dry fern as bedding in warm and cold seasons, respectively. Age, sex, and number of calving of BEH-affected cattle (case housheold) and control cattle that proved it did not show microhaematuria were also recorded.    
+
+__*Analysis:*__ Univariable conditional logistic regression followed by multivariable conditional logistic regression. A quantitative bias analysis was performed to assess the extent of bias that was expected to be present for the association between free-grazing and case. This is because those exposed to free-grazing are more likely to be exposed to tick, which in turn is likely to cause haemoglobinuria. Microscopic examinations showed 2 cattle out of 36 probable cases (5.6%) were actually haemoglobinuria. None of 72 controls showed evidence of microhaematuria.  
+
+__*Reference:*__ Adjusting for outcome misclassification: the importance of accounting for case-control sampling and other forms of outcome-related selection (2013, Jurek et al). In a nutshell, the standard bias adjusting method assumes that sampling fraction is the same for disease positive and negative. This is, however, not the case for case-control study. This study showed how inaccurate estimates would be obtained if the different sampling fraction between the case and control is ignored. However, this also shows that if we have an idea about the sensitivity and specificity of outcome classification (i.e. case or not) in the sample, not Se/Sp in the population, we can still use the standard method. Se/Sp in the population is the parameter which is used in the stadnard formula, so replace them by the Se/Sp in the sample. In our example, we have Se/Sp of the sample, so we can just use the standard adjustment method. 
+
+__*Publication:*__ This work will be published in the early 2017 entitled as "Revisiting an old disease? Risk factors for bovine enzootic haematuria in the Kingdom of Bhutan" in Preventive Veterinary Medicine. 
+
+
+## PAF calculation for a matched case-control study, where a selection of controls is not random and thus control samples do not represent controls in the source population.
+```{r}
+
+# Final main effect model
+dat.clog_dag1 <- clogit(cat_int ~ factor(fgspr) +factor(cage) + fern_warm +fern_cold+ strata(cc_set), data = dat)
+# Extract coefficients and store 95%CIs
+or.p <-  exp(summary(dat.clog_dag1)$coefficients[,1])
+
+### PAF for fresh fern bedding harvested in warm season. 
+
+# PAF and bootstrap confidence inetrval based on Llorca et al (2000)
+# AR = 1 - sigma(Pj)/RRj, where Pj is the proportion of cases exposed to each exposure
+# RRj is the risk ratio of each exposure
+
+tab <- table(dat$fern_warm, dat$cat_int)
+# Calculate the proportion of case falling into each category
+p.exp0 <- tab[1,2] / sum(tab[,2]) 
+p.exp1 <- tab[2,2] / sum(tab[,2]) 
+p.exp2 <- tab[3,2] / sum(tab[,2]) 
+p.exp3 <- tab[4,2] / sum(tab[,2]) 
+
+# Calculate AR using the coefficient for fresh fern (stored in or.p[8])
+AR3 <- 1 - p.exp0/1 - p.exp1/1 -p.exp2/or.p[8] -p.exp3/1 # 0.191
+
+
+#---------------------------------------------------------
+# Bootstrap confidence interval
+cc_set_unique <- unique(dat$cc_set) #183
+AR.list <- c()
+i <- 1
+## Make up new dataset by sampling 183 case-control sets with replacement
+while (i<1001)
+{
+samp <- data.frame(sample(cc_set_unique, size = length(cc_set_unique), replace = T))
+colnames(samp) <- "cc_set"
+samp$new_cc <- seq(1:nrow(samp))
+samp.d <- merge(samp,dat,by="cc_set",all.x=T)
+
+## Run the conditional logistic regression and estimate coefficient
+temp.clog <- clogit(cat_int ~ factor(fgspr) +factor(cage) + fern_warm +fern_cold+ strata(new_cc), data = samp.d)
+
+or.temp <-  exp(summary(temp.clog)$coefficients[,1])
+
+# Covert OR in to RR
+tab <- table(samp.d$fern_warm, samp.d$cat_int)
+p.exp <- tab[1,2] / sum(tab[1,])
+rr.p0 <- 1 # baseline has risk ratio of 1
+rr.p1 <- zy(risk = p.exp, oddsratio = or.temp[7])
+rr.p2 <- zy(risk = p.exp, oddsratio = or.temp[8])
+rr.p3 <- zy(risk = p.exp, oddsratio = or.temp[9])
+
+# Calculate PAF
+p.exp0 <- tab[1,2] / sum(tab[,2]) 
+p.exp1 <- tab[2,2] / sum(tab[,2]) 
+p.exp2 <- tab[3,2] / sum(tab[,2]) 
+p.exp3 <- tab[4,2] / sum(tab[,2]) 
+
+AR.temp3 <- 1 - p.exp0/1 - p.exp1/1 -p.exp2/or.temp[8] -p.exp3/1
+
+if (AR.temp3>=0)
+{
+AR.list <- cbind(AR.list,AR.temp3)
+i <- i +1
+}
+}
+# 95%CI
+quantile(AR.list,c(0.025,0.975)) 
+
+# Fresh fern specific PAF is 0.03987508 0.32397406, mean 0.191
+
+```
+
+### Quantitative bias analysis accounting for random error + systematic bias
+
+```{r}
+## We assume that each case has a certain probability to be false positive.
+## This probability is unknown but we know 2/36 was false-positive in one region.
+## There are several ways to assume this false-positive probability.
+## One is to assume beta distribution, with 2 positive out of 36 cases. This centres towards to the point estimate 2/36.
+## The other is to assume that we believe the true false-positive probability is within this 95% range but not sure at all where it falls within the range.
+## To be conservative, take the latter approach because the sample size of 36 is quite small and we do not have a priori information on this probability.
+
+# 95%CI for beta distribution beta(2+1,36-2+1)
+limits <- qbeta(c(0.025,0.975),3,35)
+
+
+# For each case that exposed to free-grazing, remove the case (and therefore controls as well, because this is a matched case-control design) if the case is determined to be a false-positive with a randomly chosen probability
+# Run a conditional logistic regression on the new data using the same explanatory variables in the final model
+# Get the coefficients and describe the range of the obtained coefficient over 1000 simulations
+
+#======DATA PREPARATION==============================================
+# Creat an id
+dat$id <- seq(1:nrow(dat))
+# Create a binary variable that represents if observation is exposed to free-grazing at least a month
+dat$fgraze_bin <- ifelse(dat$fgraze==0,0,1)
+# get case-control set id (cc_set) where case is exposed to free-grazing
+case_exposed <- dat[ which(dat$fgraze_bin==1&dat$cat_int==1),]$cc_set
+
+#===== CREATE DATA STORAGE================================================
+
+num_obs <- c() # store how many observations used
+num_obsr <- c() # store how many observations used
+num_casr <- c()
+coef_fgspr1r <- coef_fgspr2r <- coef_fgspr3r <- coef_cage2r <- coef_cage3r <- coef_cage4r <- coef_fern1r <- coef_fern2r <- coef_fern4r <-coef_fern1wr <- coef_fern2wr <- coef_fern4wr <- c() # storage for simulated coefficients
+
+#======1000 ITERATIONS BELOW=============================================
+
+for (i in 1:1000)
+     {
+  # Sample one random draw from uniform distribution with lower and higher limits being        equal to the 95%CI of the beta distribution
+p <- runif(length(case_exposed),min=limits[1],max=limits[2])
+# For each case-control set id, toss a coin to decide if they should be removed
+# a vector indicating if it should be removed or not
+rem_ind <- sapply(p,function(x) {ifelse(x>runif(1,min=0,max=1),1,0)},simplify=TRUE)
+# attach an indicator if the case is removed
+dat$remove <- 0 # initialise the variable = 0
+if (sum(rem_ind)>0)
+{
+dat[which(dat$cc_set %in% case_exposed[which(rem_ind==1)]),]$remove <- 1 # attach 1 to those that will be removed
+}
+
+#Obtain a point eatimate and 95%CI value associated for each explanatory variable
+dat_new <- dat[ which(dat$remove==0),]
+num_obsr <- cbind(num_obsr,nrow(dat_new))
+num_casr <- cbind(num_casr, nrow(dat_new[ which(dat_new$cat_int==1),]))
+temp_clogit <- clogit(cat_int ~ factor(fgspr) +factor(cage) + fern_warm +fern_cold+ strata(cc_set), data = dat_new)
+coef_fgspr1r <- cbind(coef_fgspr1r,(temp_clogit$coefficient[1]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[1,3]))
+coef_fgspr2r <- cbind(coef_fgspr2r,temp_clogit$coefficient[2]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[2,3])
+coef_fgspr3r <- cbind(coef_fgspr3r,temp_clogit$coefficient[3]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[3,3])
+coef_cage2r <- cbind(coef_cage2r,temp_clogit$coefficient[4]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[4,3])
+coef_cage3r <- cbind(coef_cage3r,temp_clogit$coefficient[5]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[5,3])
+coef_cage4r <- cbind(coef_cage4r,temp_clogit$coefficient[6]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[6,3])
+coef_fern1r <- cbind(coef_fern1r,temp_clogit$coefficient[7]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[7,3])
+coef_fern2r <- cbind(coef_fern2r,temp_clogit$coefficient[8]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[8,3])
+coef_fern4r <- cbind(coef_fern4r,temp_clogit$coefficient[9]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[9,3])
+coef_fern1wr <- cbind(coef_fern1wr,temp_clogit$coefficient[10]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[10,3])
+coef_fern2wr <- cbind(coef_fern2wr,temp_clogit$coefficient[11]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[11,3])
+coef_fern4wr <- cbind(coef_fern4wr,temp_clogit$coefficient[12]+rnorm(1, mean = 0, sd = 1)*summary(temp_clogit)$coefficients[12,3])
+
+
+} # end of iterations
+
+```
